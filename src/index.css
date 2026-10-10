@@ -82,6 +82,9 @@ h3 { margin: 18px 0 8px; font-size: .92rem; }
 .pairing-manual summary { cursor: pointer; color: #475569; font-weight: 700; }
 .pairing-manual textarea { width: 100%; margin-top: 10px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 10px; font: 12px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
 .pairing-connect { width: 100%; margin-bottom: 14px; }
+.kiosk-url-select { display: grid; gap: 8px; color: #475569; font-weight: 700; }
+.kiosk-url-select select { min-width: 0; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; padding: 10px; }
+.kiosk-url { overflow-wrap: anywhere; text-align: center; font-size: .82rem; }
 .filter-row { display: flex; gap: 10px; margin: 18px 0; }
 .search-box { display: flex; align-items: center; gap: 8px; flex: 1; border: 1px solid #cbd5e1; border-radius: 13px; background: #fff; padding: 0 13px; }
 .search-box input { width: 100%; height: 44px; border: 0; outline: 0; }

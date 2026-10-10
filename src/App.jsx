@@ -48,6 +48,16 @@ export default function App() {
   const [storageError, setStorageError] = useState('');
   const [operationError, setOperationError] = useState('');
   const [teacherToken, setTeacherToken] = useState('');
+  const [kioskToken, setKioskToken] = useState(() =>
+    LOCAL_ONLY_MODE ? '' : sessionStorage.getItem('student-exit-kiosk-token') || ''
+  );
+  const [kioskPassword, setKioskPassword] = useState('');
+  const [kioskError, setKioskError] = useState('');
+  const [kioskQrOpen, setKioskQrOpen] = useState(false);
+  const [kioskUrls, setKioskUrls] = useState([]);
+  const [kioskUrl, setKioskUrl] = useState('');
+  const [kioskQr, setKioskQr] = useState('');
+  const [kioskQrError, setKioskQrError] = useState('');
   const [rtcRole, setRtcRole] = useState('');
   const [rtcConnected, setRtcConnected] = useState(false);
   const [pairingMode, setPairingMode] = useState('');
@@ -391,6 +401,17 @@ export default function App() {
     localStorage.setItem('student-exit-queue', JSON.stringify(queue));
   }, [queue, storageMode]);
   useEffect(() => {
+    if (!kioskUrl) {
+      setKioskQr('');
+      return;
+    }
+    QRCode.toDataURL(kioskUrl, { errorCorrectionLevel: 'M', margin: 2, width: 420 })
+      .then(setKioskQr)
+      .catch((error) => {
+        setKioskQrError(error instanceof Error ? error.message : 'Could not create the kiosk QR code.');
+      });
+  }, [kioskUrl]);
+  useEffect(() => {
     const id = setInterval(() => tick((value) => value + 1), 30000);
     return () => clearInterval(id);
   }, []);
@@ -405,25 +426,38 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (LOCAL_ONLY_MODE) return undefined;
+    if (!teacherToken && !kioskToken) {
+      setStorageMode('connecting');
+      return undefined;
+    }
 
     let stopped = false;
     async function refreshSharedState() {
       try {
+        const token = teacherMode ? teacherToken : kioskToken;
         const response = await fetch(
           teacherMode && teacherToken ? '/api/teacher/history' : '/api/state',
-          teacherMode && teacherToken
-            ? { headers: { Authorization: `Bearer ${teacherToken}` } }
-            : undefined
+          { headers: { Authorization: `Bearer ${token}` } }
         );
         if (response.status === 401 && teacherMode && teacherToken) {
           if (stopped) return;
           setTeacherToken('');
           setTeacherMode(false);
+          setKioskToken('');
+          sessionStorage.removeItem('student-exit-kiosk-token');
           setPin('');
           setPinError('Teacher session expired. Please sign in again.');
           setPinOpen(true);
           setStorageMode('shared');
           setStorageError('');
+          return;
+        }
+        if (response.status === 401 && !teacherMode && kioskToken) {
+          if (stopped) return;
+          setKioskToken('');
+          sessionStorage.removeItem('student-exit-kiosk-token');
+          setKioskError('Your kiosk connection expired. Enter the pairing password again.');
+          setStorageMode('connecting');
           return;
         }
         if (!response.ok) throw new Error(`Tracker server returned ${response.status}.`);
@@ -448,7 +482,7 @@ export default function App() {
       stopped = true;
       window.clearInterval(id);
     };
-  }, [teacherMode, teacherToken]);
+  }, [teacherMode, teacherToken, kioskToken]);
 
   const outNow = useMemo(() => history.filter((item) => !item.returnedAt), [history]);
   const activeTrip = selectedStudent
@@ -511,7 +545,10 @@ export default function App() {
 
     const response = await fetch('/api/action', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${teacherToken || kioskToken}`
+      },
       body: JSON.stringify({ action, ...values })
     });
     const result = await response.json();
@@ -703,8 +740,26 @@ export default function App() {
     throw new Error('Unknown classroom action.');
   };
 
+  async function connectKiosk() {
+    try {
+      setKioskError('');
+      const response = await fetch('/api/kiosk/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: kioskPassword })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not connect the kiosk.');
+      sessionStorage.setItem('student-exit-kiosk-token', result.token);
+      setKioskToken(result.token);
+      setKioskPassword('');
+    } catch (error) {
+      setKioskError(error instanceof Error ? error.message : 'Could not connect the kiosk.');
+    }
+  }
+
   function unlockTeacher() {
-    if (storageMode === 'shared') {
+    if (!LOCAL_ONLY_MODE) {
       fetch('/api/teacher/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -736,6 +791,23 @@ export default function App() {
     }
   }
 
+  async function openKioskQr() {
+    try {
+      setKioskQrError('');
+      const response = await fetch('/api/kiosk/urls', {
+        headers: { Authorization: `Bearer ${teacherToken}` }
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not load classroom network addresses.');
+      if (!result.urls?.length) throw new Error('No local network address was found. Connect the host computer to classroom Wi-Fi and try again.');
+      setKioskUrls(result.urls);
+      setKioskUrl(result.urls[0]);
+      setKioskQrOpen(true);
+    } catch (error) {
+      setKioskQrError(error instanceof Error ? error.message : 'Could not create the kiosk QR code.');
+    }
+  }
+
   function exportCsv() {
     const rows = history.map((item) => [
       item.student,
@@ -755,6 +827,68 @@ export default function App() {
     URL.revokeObjectURL(link.href);
   }
 
+  if (!LOCAL_ONLY_MODE && storageMode === 'connecting' && !teacherMode && !kioskToken) {
+    return (
+      <main className="app student-background">
+        <div className="shell">
+          <section className="panel hero-panel">
+            <h2>Connect to the classroom tracker</h2>
+            <p className="lead">Enter the pairing password shown by your teacher.</p>
+            <div className="name-form">
+              <input
+                className="pin-input"
+                type="password"
+                autoCapitalize="characters"
+                autoComplete="off"
+                value={kioskPassword}
+                onChange={(event) => { setKioskPassword(event.target.value); setKioskError(''); }}
+                onKeyDown={(event) => event.key === 'Enter' && connectKiosk()}
+                placeholder="Pairing password"
+                aria-label="Pairing password"
+              />
+              <button className="btn btn-primary big-btn" disabled={!kioskPassword.trim()} onClick={connectKiosk}>
+                Connect kiosk
+              </button>
+              {kioskError && <p className="error" role="alert">{kioskError}</p>}
+              <button className="btn btn-ghost big-btn" onClick={() => { setPin(''); setPinError(''); setPinOpen(true); }}>
+                Teacher access
+              </button>
+            </div>
+          </section>
+          {pinOpen && (
+            <div className="modal-backdrop">
+              <div className="modal panel">
+                <div className="modal-title-row">
+                  <div><p className="eyebrow">Teacher access</p><h2>Enter PIN</h2></div>
+                  <button className="icon-btn" onClick={() => setPinOpen(false)} aria-label="Close"><X /></button>
+                </div>
+                <p className="muted">Teacher dashboard access is protected.</p>
+                <input
+                  className="pin-input"
+                  autoFocus
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={12}
+                  value={pin}
+                  onChange={(event) => { setPin(event.target.value.replace(/\D/g, '').slice(0, 12)); setPinError(''); }}
+                  onKeyDown={(event) => event.key === 'Enter' && unlockTeacher()}
+                  placeholder="Teacher PIN"
+                />
+                {pinError && <p className="error">{pinError}</p>}
+                <div className="two-buttons">
+                  <button className="btn btn-outline" onClick={() => setPinOpen(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={unlockTeacher} disabled={!pin.length}>
+                    <Lock size={18} /> Unlock
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   if (storageMode === 'connecting') {
     return <main className="app student-background"><div className="shell"><section className="panel hero-panel"><h2>Connecting to the classroom tracker…</h2><p>Keep this page open while the teacher monitor accepts the connection.</p></section>{renderPairingDialog()}</div></main>;
   }
@@ -771,7 +905,11 @@ export default function App() {
             <div>
               <p className="eyebrow">Teacher dashboard</p>
               <h1>Student Exit Tracker</h1>
-              <p className="muted">{rtcConnected ? 'Student kiosk connected' : 'Student kiosk not connected'}</p>
+              <p className="muted">
+                {LOCAL_ONLY_MODE
+                  ? rtcConnected ? 'Student kiosk connected' : 'Student kiosk not connected'
+                  : 'Shared tracker active on this classroom network'}
+              </p>
             </div>
             <div className="dashboard-actions">
               {LOCAL_ONLY_MODE && (
@@ -779,6 +917,7 @@ export default function App() {
                   ? <button className="btn btn-outline" onClick={endMonitorPairing}>Disconnect kiosk</button>
                   : <button className="btn btn-primary" onClick={beginMonitorPairing}>Pair student kiosk</button>
               )}
+              {!LOCAL_ONLY_MODE && <button className="btn btn-primary" onClick={openKioskQr}>Show kiosk QR</button>}
               <button className="btn btn-outline" onClick={() => { setTeacherMode(false); setTeacherToken(''); setHistory(history.filter((item) => !item.returnedAt)); }}>
                 <ArrowLeft size={18} /> Lock & return to kiosk
               </button>
@@ -855,6 +994,32 @@ export default function App() {
           </article>
         </div>
         {renderPairingDialog()}
+        {kioskQrError && <p className="operation-error" role="alert">{kioskQrError}</p>}
+        {kioskQrOpen && (
+          <div className="modal-backdrop">
+            <section className="modal panel pairing-modal" role="dialog" aria-modal="true" aria-labelledby="kiosk-qr-title">
+              <div className="modal-title-row">
+                <div>
+                  <p className="eyebrow">Classroom kiosk</p>
+                  <h2 id="kiosk-qr-title">Open and connect a tablet</h2>
+                </div>
+                <button className="icon-btn" onClick={() => setKioskQrOpen(false)} aria-label="Close kiosk QR"><X /></button>
+              </div>
+              <p>Scan this QR on the tablet, then enter the pairing password <strong>PAIR</strong>. Keep this classroom server running.</p>
+              {kioskUrls.length > 1 && (
+                <label className="kiosk-url-select">
+                  Tablet network address
+                  <select value={kioskUrl} onChange={(event) => setKioskUrl(event.target.value)}>
+                    {kioskUrls.map((url) => <option key={url} value={url}>{new URL(url).host}</option>)}
+                  </select>
+                </label>
+              )}
+              {kioskQr && <img className="pairing-qr" src={kioskQr} alt="QR code that opens this classroom kiosk" />}
+              <p className="muted kiosk-url">{kioskUrl}</p>
+              {kioskQrError && <p className="operation-error" role="alert">{kioskQrError}</p>}
+            </section>
+          </div>
+        )}
       </main>
     );
   }
