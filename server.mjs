@@ -12,13 +12,19 @@ const dataDirectory = resolve(root, 'data');
 const dataPath = resolve(dataDirectory, 'tracker-data.json');
 const port = Number(process.env.PORT || 4173);
 const teacherPin = process.env.TRACKER_TEACHER_PIN;
+const kioskPassword = process.env.TRACKER_KIOSK_PASSWORD || 'PAIR';
 if (!teacherPin || !/^\d{8,12}$/.test(teacherPin)) {
   throw new Error('Set TRACKER_TEACHER_PIN to a new 8-to-12-digit PIN before starting the LAN server.');
+}
+if (kioskPassword.length < 4 || kioskPassword.length > 64) {
+  throw new Error('TRACKER_KIOSK_PASSWORD must be 4 to 64 characters.');
 }
 const reasons = new Set(['Washroom', 'Water', 'Locker', 'Library', 'Office', 'Other']);
 const sharedReasons = new Set(['Washroom', 'Water', 'Locker']);
 const sessions = new Map();
+const kioskSessions = new Map();
 const loginAttempts = new Map();
+const kioskAttempts = new Map();
 let state = { history: [], queue: [] };
 let writeChain = Promise.resolve();
 
@@ -152,9 +158,19 @@ function validTeacherSession(request) {
   return true;
 }
 
-function equalPin(candidate) {
+function validKioskSession(request) {
+  const token = request.headers.authorization?.replace(/^Bearer\s+/i, '');
+  const expiresAt = token ? kioskSessions.get(token) : null;
+  if (!expiresAt || expiresAt < Date.now()) {
+    if (token) kioskSessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function equalSecret(candidate, expectedSecret) {
   const actual = Buffer.from(String(candidate || ''));
-  const expected = Buffer.from(teacherPin);
+  const expected = Buffer.from(expectedSecret);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -200,11 +216,63 @@ async function serveStatic(pathname, response) {
 
 async function handleRequest(request, response) {
   const url = new URL(request.url || '/', 'http://localhost');
+  if (url.pathname === '/api/kiosk/pair' && request.method === 'POST') {
+    const address = request.socket.remoteAddress || 'unknown';
+    const attempt = kioskAttempts.get(address);
+    if (attempt && attempt.until > Date.now() && attempt.count >= 5) {
+      return jsonResponse(response, 429, { error: 'Too many attempts. Wait five minutes and try again.' });
+    }
+
+    try {
+      const body = await readJson(request);
+      if (!equalSecret(body.password, kioskPassword)) {
+        const current = attempt && attempt.until > Date.now() ? attempt : { count: 0, until: Date.now() + 300_000 };
+        current.count += 1;
+        kioskAttempts.set(address, current);
+        return jsonResponse(response, 401, { error: 'Incorrect pairing password. Try again.' });
+      }
+      kioskAttempts.delete(address);
+      const token = randomBytes(32).toString('hex');
+      kioskSessions.set(token, Date.now() + 8 * 60 * 60_000);
+      return jsonResponse(response, 200, { token });
+    } catch (error) {
+      return jsonResponse(response, 400, {
+        error: error instanceof Error ? error.message : 'Could not connect the kiosk.'
+      });
+    }
+  }
+
+  if (url.pathname === '/api/kiosk/urls' && request.method === 'GET') {
+    if (!validTeacherSession(request)) {
+      return jsonResponse(response, 401, { error: 'Teacher session expired. Sign in again.' });
+    }
+    const requestHost = request.headers.host || '';
+    const hostName = new URL(`http://${requestHost}`).hostname;
+    const urls = [];
+    if (hostName !== 'localhost' && hostName !== '127.0.0.1') {
+      urls.push(`http://${requestHost}/?kiosk=1`);
+    }
+    for (const addresses of Object.values(networkInterfaces())) {
+      for (const address of addresses || []) {
+        if (address.family === 'IPv4' && !address.internal) {
+          urls.push(`http://${address.address}:${port}/?kiosk=1`);
+        }
+      }
+    }
+    return jsonResponse(response, 200, { urls: [...new Set(urls)] });
+  }
+
   if (url.pathname === '/api/state' && request.method === 'GET') {
+    if (!validKioskSession(request) && !validTeacherSession(request)) {
+      return jsonResponse(response, 401, { error: 'Enter the kiosk pairing password to connect.' });
+    }
     return jsonResponse(response, 200, publicState());
   }
 
   if (url.pathname === '/api/action' && request.method === 'POST') {
+    if (!validKioskSession(request) && !validTeacherSession(request)) {
+      return jsonResponse(response, 401, { error: 'Enter the kiosk pairing password to connect.' });
+    }
     try {
       const body = await readJson(request);
       const result = await mutate((current) => {
@@ -265,7 +333,7 @@ async function handleRequest(request, response) {
 
     try {
       const body = await readJson(request);
-      if (!equalPin(body.pin)) {
+      if (!equalSecret(body.pin, teacherPin)) {
         const current = attempt && attempt.until > Date.now() ? attempt : { count: 0, until: Date.now() + 300_000 };
         current.count += 1;
         loginAttempts.set(address, current);
