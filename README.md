@@ -97,7 +97,7 @@ This PIN is a classroom convenience barrier, not strong security. Anyone with ac
 
 For the local-network server, set `TRACKER_TEACHER_PIN` in the PowerShell process before starting `npm run lan`. The server requires a new 8-to-12-digit PIN and does not use the value in `src/App.jsx`.
 
-The local-network kiosk pairing password defaults to `PAIR`. To choose a different classroom password, set `TRACKER_KIOSK_PASSWORD` in the PowerShell process before starting `npm run lan`. This password is sent over unencrypted HTTP and is only a convenience gate; use the server only on a school-approved trusted network.
+The local-network kiosk pairing password is `PAIR`. It is sent over unencrypted HTTP and is only a convenience gate; use the server only on a school-approved trusted network.
 
 ## Recommended next stage
 
