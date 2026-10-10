@@ -244,6 +244,17 @@ export default function App() {
     try {
       payload = JSON.parse(value);
     } catch {
+      let scannedUrl;
+      try {
+        scannedUrl = new URL(value);
+      } catch {
+        throw new Error('That QR code is not a valid classroom pairing code.');
+      }
+      if (scannedUrl.protocol === 'http:' || scannedUrl.protocol === 'https:') {
+        throw new Error(
+          'This QR opens the classroom app; it is not a monitor pairing code. Close this scanner, scan the QR with the tablet camera, open the local classroom link, then enter PAIR.'
+        );
+      }
       throw new Error('That QR code is not a valid classroom pairing code.');
     }
     if (payload.version !== 1 || !payload.description?.sdp) {
